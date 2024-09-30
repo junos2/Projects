@@ -1,0 +1,256 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import scipy as sp
+import time
+
+# ===== Code for Part 1 ===== #
+
+def plot_field(lat, lon, u, time, levels=20):
+    """
+    Generate contour plot of u at a particular time.
+    Input:
+    lat, lon: latitude and longitude arrays
+    u: full array of wind speed data
+    time: time index for the plot (0 to 364)
+    levels: number of contour levels in the plot
+    """
+    plt.figure()
+    plt.contourf(lon, lat, u[time, :, :], levels)
+    plt.axis('equal')
+    plt.grid()
+    plt.xlabel('longitude')
+    plt.ylabel('latitude')
+    plt.show()
+
+
+def part1():
+    """
+    Code for part 1.
+    """
+    # Load data
+    d = np.load('data1.npz')
+    lat = d['lat']
+    lon = d['lon']
+    u = d['u']
+
+    # Daily average zonal wind speed fluctuations
+    daily_average = np.mean(u, axis=(1, 2))
+
+    # Plot daily average fluctuations
+    fig1, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(daily_average)
+    ax1.set_title('Daily Average Zonal Wind Speed Fluctuations')
+    ax1.set_xlabel('Day')
+    ax1.set_ylabel('Zonal Wind Speed (m/s)')
+    ax1.grid(True)
+
+    # Spatial average fluctuations over latitude
+    spatial_average_lat = np.mean(u, axis=(0, 2))
+    fig2, ax2 = plt.subplots(figsize=(10, 6))
+    ax2.plot(lat, spatial_average_lat.T)
+    ax2.set_title('Spatial Average Zonal Wind Speed (Latitude)')
+    ax2.set_xlabel('Latitude')
+    ax2.set_ylabel('Zonal Wind Speed (m/s)')
+    ax2.grid(True)
+
+    # Spatial average fluctuations over longitude
+    spatial_average_lon = np.mean(u, axis=(0, 1))
+    fig3, ax3 = plt.subplots(figsize=(10, 6))
+    ax3.plot(lon, spatial_average_lon.T)
+    ax3.set_title('Spatial Average Zonal Wind Speed (Longitude)')
+    ax3.set_xlabel('Longitude')
+    ax3.set_ylabel('Zonal Wind Speed (m/s)')
+    ax3.grid(True)
+
+    # PCA on the standardized data
+    u_reshaped = u.reshape(u.shape[0], -1)
+    u_mean = np.mean(u_reshaped, axis=1)
+    u_standardized = np.transpose(u_reshaped.T - u_mean) / np.std(u_reshaped)
+
+    U, s, vt = np.linalg.svd(u_standardized)
+    u_tilde = np.dot(U.T, u_standardized)
+
+    # Compute variance ratios
+    var = 1 / (len(u_reshaped[0]) - 1) * s ** 2
+    var_ratio = var / np.sum(var) * 100
+
+    # PCA plot
+    fig4, ax4 = plt.subplots(figsize=(10, 6))
+    for i in range(1, 17):
+        ax4.plot(lon, u_tilde[0, (i - 1) * 144: 144 * i], label=i)
+        ax4.set_xlabel('Longitude')
+        ax4.set_ylabel('Zonal Wind Speed')
+        ax4.legend()
+
+    # Fourier transform of the first principal component
+    def DFT(X):
+        N = len(X)
+        X = X - np.mean(X)
+        X_fft = np.fft.fft(X)
+        Pxx = np.abs(X_fft) ** 2 / N
+        f = np.fft.fftfreq(N)
+        f = np.fft.fftshift(f)
+        Pxx = np.fft.fftshift(Pxx)
+        plt.plot(f, Pxx)
+        plt.xlabel('f')
+        plt.ylabel('Pxx')
+        plt.show()
+        return f, Pxx
+
+    x = u.reshape(u.shape[0], -1).T
+    A = (x - np.mean(x, axis=1)[:, None]) / np.std(x, axis=1)[:, None]
+    U2, s2, vt2 = np.linalg.svd(A)
+    Anew = U2 @ A
+    y = Anew[0, :]
+    f, Pxx = DFT(y)
+    print('1/Dominant Frequency of First Principal Component is', f[np.argmax(Pxx)] ** (-1))
+
+
+# ===== Code for Part 2 ===== #
+
+def part2(f, method=2):
+    """
+    Part 2 - Interpolation methods.
+    Input:
+        f: m x n array
+        method: 1 or 2, interpolation method
+    Output:
+        fI: interpolated data (using method)
+    """
+    m, n = f.shape
+    fI = np.zeros((m - 1, n))
+
+    if method == 1:
+        fI = 0.5 * (f[:-1, :] + f[1:, :])
+    else:
+        alpha = 0.3
+        a, b = 1.5, 0.1
+        a_bc, b_bc, c_bc, d_bc = 5 / 16, 15 / 16, -5 / 16, 1 / 16
+        data = [a_bc - a / 2, b_bc - a / 2, c_bc - b / 2, d_bc] * 2
+        x = [0, 0, 0, 0, m - 2, m - 2, m - 2, m - 2]
+        y = [0, 1, 2, 3, m - 1, m - 2, m - 3, m - 4]
+        diag = sp.sparse.diags([b / 2, a / 2, a / 2, b / 2], [-1, 0, 1, 2], shape=(m - 1, m))
+        coo = sp.sparse.coo_array((data, (x, y)), shape=(m - 1, m))
+        A = diag + coo
+        Af = A @ f
+        B = np.zeros((3, m - 1))
+        B[1, :] = 1
+        B[2, :-2] = alpha
+        B[0, 2:] = alpha
+        fI = sp.linalg.solve_banded((1, 1), B, Af)
+
+    return fI
+
+
+def part2_analyze():
+    """
+    Part 2 - Analysis and error comparison between methods.
+    """
+    n, m = 50, 40
+    x = np.linspace(-1, 1, n)
+    y = np.linspace(0, 1, m)
+    xg, yg = np.meshgrid(x, y)
+    dy = y[1] - y[0]
+    yI = y[:-1] + dy / 2
+
+    f1 = np.cos(np.pi * xg) + np.sin(np.pi * yg)
+    fI1 = part2(f1, method=1)
+    fI2 = part2(f1, method=2)
+    fIact = np.cos(np.pi * xg[:-1, :]) + np.sin(np.pi * yI[:, None])
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 5))
+    ax1.set_title("Original Data")
+    pc1 = ax1.pcolormesh(xg, yg, f1, shading='auto')
+    fig.colorbar(pc1, ax=ax1)
+    ax2.set_title("Absolute Error Method 1")
+    pc2 = ax2.pcolormesh(xg[:-1, :], yI, np.abs(fIact - fI1), shading='auto')
+    fig.colorbar(pc2, ax=ax2)
+    ax3.set_title("Absolute Error Method 2")
+    pc3 = ax3.pcolormesh(xg[:-1, :], yI, np.abs(fIact - fI2), shading='auto')
+    fig.colorbar(pc3, ax=ax3)
+
+    print("Method 1 Absolute Error:", np.linalg.norm(fIact - fI1, ord=1))
+    print("Method 2 Absolute Error:", np.linalg.norm(fIact - fI2, ord=1))
+
+    # Speed test for methods
+    time1, time2 = [], []
+    for _ in range(1000):
+        frand = np.random.rand(n, m)
+        t1 = time.time()
+        part2(frand, method=1)
+        time1.append(time.time() - t1)
+        t1 = time.time()
+        part2(frand, method=2)
+        time2.append(time.time() - t1)
+
+    print("Method 1 Wall Time:", np.mean(time1))
+    print("Method 2 Wall Time:", np.mean(time2))
+
+
+# ===== Code for Part 3 ===== #
+
+def part3q1(y0, alpha, beta, b, c, tf=200, Nt=800, err=1e-6, method="RK45"):
+    """
+    Simulate system of 2n nonlinear ODEs.
+    Input:
+    y0: Initial condition (2*n array)
+    alpha, beta, b, c: model parameters
+    tf: final time
+    Nt: time points
+    err: tolerance for solver
+    method: solver method
+    """
+    y0 = np.array(y0)
+
+    def f(t, y):
+        n = len(y) // 2
+        dydt = np.zeros(2 * n)
+        dydt[:n] = y[n:]
+        dydt[n:] = -(alpha + beta) * y[:n] - b * y[:n] ** 3 + c * y[:n] ** 5
+        return dydt
+
+    t_eval = np.linspace(0, tf, Nt + 1)
+    sol = solve_ivp(f, [0, tf], y0, method=method, t_eval=t_eval, rtol=err)
+    return sol.t, sol.y[:len(y0) // 2]
+
+
+def dom_freq(t, y):
+    """
+    Compute the dominant frequency for the system of ODEs.
+    Input:
+        t: time array
+        y: solution to ODEs (array)
+    Output:
+        dom_freq: dominant frequency array
+    """
+    f_dom = np.zeros(len(y))
+    for i in range(len(y)):
+        f, Pxx = sp.signal.welch(y[i, :], 1 / (t[1] - t[0]))
+        f_dom[i] = f[np.argmax(Pxx)]
+    return f_dom
+
+
+def part3_analyze():
+    """
+    Part 3 - Analyze dominant frequencies for different values of c.
+    """
+    n = 64
+    alpha, beta, b = 0.2, 0.2, 1
+    c_values = [0, 2, 4, 8]
+    y0 = 0.1 * np.random.randn(2 * n)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    axes = axes.ravel()
+    for j, c in enumerate(c_values):
+        t, y = part3q1(y0, alpha, beta, b, c)
+        f_dom = dom_freq(t, y)
+
+        axes[j].plot(np.linspace(0, 1, len(f_dom)), f_dom)
+        axes[j].set_xlabel("x")
+        axes[j].set_ylabel("Dominant Frequency")
+        axes[j].set_title(f"c = {c}")
+        axes[j].grid(True)
+
+    plt.tight_layout()
+    plt.show()
